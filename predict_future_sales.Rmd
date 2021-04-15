@@ -1,0 +1,197 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Load library
+```{r}
+library(dplyr)
+library(ggplot2)
+library(data.table)
+library(gbm)
+```
+
+# Load data file
+```{r}
+sales <- fread("D:/RFile/Kaggle/Predict Future Sales  R/competitive-data-science-predict-future-sales/sales_train.csv")
+items <- fread("D:/RFile/Kaggle/Predict Future Sales  R/competitive-data-science-predict-future-sales/items.csv")
+test <- fread("D:/RFile/Kaggle/Predict Future Sales  R/competitive-data-science-predict-future-sales/test.csv")
+```
+
+# Inspect data
+```{r}
+dim(sales)   # 2935849 rows   6 cols
+dim(items)   # 22170 rows   3 cols
+str(sales)
+str(items)
+head(sales, 10)
+head(items, 10)
+
+# Merge data and convert the data type
+sales <- merge(sales, items[,c("item_id", "item_category_id")], by = "item_id", all.x = T)
+
+# change data type
+sales$date <- as.Date(sales$date, format = "%d.%m.%Y")
+#sales$shop_id <- as.factor(sales$shop_id)
+#sales$item_id <- as.factor(sales$item_id)
+sales$item_category_id <- as.factor(sales$item_category_id)
+
+# summary(sales)
+```
+
+# EDA
+```{r warning=FALSE}
+# How many shops are there?
+# sales %>% select(shop_id) %>% distinct() %>% summarise("Number of Shops" = n())     # 60
+
+# How many items are there?
+# sales %>% select(item_id) %>% distinct() %>% summarise("Number of Items" = n())     # 21807
+
+# How many categories are there?
+# sales %>% select(item_category_id) %>% distinct() %>% summarise("Number of categories" = n())      # 84
+
+# How were the sales by each category?
+sales_by_category <- select(sales, c(item_category_id, item_cnt_day)) %>%
+                      group_by(item_category_id) %>% summarise(item_cnt_day = sum(item_cnt_day, na.rm = T))
+
+ggplot(sales_by_category, mapping = aes(x = reorder(item_category_id,item_cnt_day), y = item_cnt_day, fill = item_category_id)) +
+  geom_histogram(stat = "identity") +
+  coord_flip() +
+  ggtitle("The sales by category") +
+  xlab("Items Id") + 
+  ylab("Sales Count")
+
+# Which shops have the most items?
+items_in_shops <- select(sales, c(shop_id, item_id)) %>%
+                  group_by(shop_id) %>% summarise(count = n_distinct(item_id))
+
+ggplot(items_in_shops, mapping = aes(x = reorder(shop_id,count), y = count, fill = factor(shop_id))) +
+  geom_histogram(stat = "identity") +
+  coord_flip() +
+  ggtitle("Items in shops") +
+  xlab("Shops Id") + 
+  ylab("Items Count")
+
+# Which categories have the most items?
+items_in_categories <- select(sales, c(item_category_id, item_id)) %>%
+                  group_by(item_category_id) %>% summarise(count = n_distinct(item_id))
+
+ggplot(items_in_categories, mapping = aes(x = reorder(item_category_id,count), y = count, fill = item_category_id)) +
+  geom_histogram(stat = "identity") +
+  coord_flip() +
+  ggtitle("Items in categories") +
+  xlab("Category Id") + 
+  ylab("Items Count")
+
+# Which items are the best seller?
+items_sold <- sales %>% group_by(item_id) %>% summarise(count = sum(item_cnt_day, na.rm = TRUE)) %>% ungroup() %>% arrange(desc(count))
+
+ggplot(head(items_sold, 10), mapping = aes(x = reorder(item_id,count), y = count, fill = factor(item_id))) +
+  geom_histogram(stat = "identity") +
+  coord_flip() +
+  ggtitle("Top 10 Items Sold most") +
+  xlab("Item Id") + 
+  ylab("Sold Count")
+
+# Which shops have the most sold?
+shops_sold <- sales %>% group_by(shop_id) %>% summarise(count = sum(item_cnt_day, na.rm = TRUE)) %>% ungroup() %>% arrange(desc(count))
+
+ggplot(head(shops_sold, 10), mapping = aes(x = reorder(shop_id,count), y = count, fill = factor(shop_id))) +
+  geom_histogram(stat = "identity") +
+  coord_flip() +
+  ggtitle("Top 10 Shops Sold most") +
+  xlab("Shop Id") + 
+  ylab("Sold Count")
+
+# Which shops have the most categories?
+categories_in_shops <- sales %>% group_by(shop_id) %>% summarise(count = n_distinct(item_category_id)) %>% ungroup() %>% arrange(desc(count))
+
+ggplot(categories_in_shops, mapping = aes(x = reorder(shop_id,count), y = count, fill = factor(shop_id))) +
+  geom_histogram(stat = "identity") +
+  coord_flip() +
+  ggtitle("The Shops have most categories") +
+  xlab("Shop Id") + 
+  ylab("Categories Count")
+
+# Which category has the most grossing?
+most_grossing_category = sales %>% group_by(item_category_id) %>% summarise(total_gross = sum(item_cnt_day * item_price)) %>%
+                          arrange(desc(total_gross))
+
+ggplot(most_grossing_category, mapping = aes(x = reorder(item_category_id,total_gross), y = total_gross, fill = item_category_id)) +
+  geom_histogram(stat = "identity") +
+  coord_flip() +
+  ggtitle("Category grossing") +
+  xlab("category Id") + 
+  ylab("Total gross")
+```
+
+# Prediction
+```{r}
+# Use the linear model
+sales_lm <- lm(item_cnt_day ~ item_id + shop_id + I(item_id^2) + I(shop_id^2), data = sales)
+
+sales_lm_pred <- predict(sales_lm, test[, c("item_id", "shop_id")])
+
+submission_lm <- data.frame(ID = test$ID,
+                         item_cnt_month = sales_lm_pred)
+head(submission_lm)
+
+write.csv(submission_lm, "submission.csv", row.names = F)
+
+# Use Random forest
+#set.seed(123)
+
+#formula <- item_cnt_day ~ item_id + shop_id
+
+#rf_sales <- randomForest(formula, 
+#                         ntree = 25,
+#                         importance = T,
+#                         data = sales[, c("shop_id", "item_id", "item_cnt_day")])
+
+
+#rf_sales_pred <- predict(rf_sales, test[,-1], type= "class")
+
+#submission <- cbind(ID = test[, "ID"],
+#                    item_cnt_month = rf_sales_pred * 30)
+
+
+# Use support vector machine
+# svm_sales <- svm(formula = formula,
+#                 data = sales[, c("shop_id", "item_id", "item_cnt_day")],
+#                 type = 'eps-regression',
+#                 kernel = 'linear')
+
+#svm_sales_pred <- predict(svm_sales, newdata = test[, -1])
+
+
+#submission_svm <- cbind(ID = test[, "ID"],
+#                        item_cnt_month = svm_sales_pred * 30)
+
+# Use gbm model
+
+set.seed(123)
+gbm_sales <- gbm(item_cnt_day ~ shop_id + item_id,
+                  data = sales,
+                  shrinkage = 0.01,
+                  distribution = "gaussian",
+                  n.trees = 3000,
+                  interaction.depth = 5, 
+                  bag.fraction = 0.5,
+                  train.fraction = 0.8,
+                  cv.folds = 5,
+                  #n.cores = -1, 
+                  verbose = T)
+
+gbm.perf(gbm_sales, method = "cv")
+
+summary(gbm_sales)
+
+sales_pred_gbm <- predict(gbm_sales, newdata = test[, c("item_id", "shop_id")], n.trees = 3000)
+
+submission_gbm <- data.frame(ID = test$ID,
+                            item_cnt_month = sales_pred_gbm)
+head(submission_gbm)
+
+write.csv(submission_gbm, "submission.csv", row.names = F)
+```
+
